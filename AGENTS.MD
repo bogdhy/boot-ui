@@ -1,0 +1,320 @@
+# BootUI — Copilot instructions
+
+BootUI is a **Spring Boot 4 starter** that adds a local-only developer console (Vue 3 SPA + REST API) to a host Spring
+Boot 4 app. The authoritative scope/behavior lives in `docs/SPECIFICATION.md`, `docs/PLAN.md`, and `docs/FEATURES.md` —
+read those before changing public behavior or visible panel behavior.
+
+## Toolchain
+
+- Java 17, Spring Boot 4.1.x (`spring-boot.version` in root `pom.xml`; currently 4.1.0).
+- Maven Wrapper (`./mvnw`) using Maven 3.9.16; do not require a system Maven install.
+- Published Maven coordinates use `com.julien-dubois.bootui:*`; Java packages remain `io.github.jdubois.bootui.*`.
+- Node.js / npm for the packaged Vue app are downloaded automatically by the `frontend-maven-plugin` (`node.version` /
+  `npm.version` in root `pom.xml`); do not add a manual Node install step for the Maven build.
+
+## Build, run, test
+
+```bash
+# CI-equivalent multi-module build (downloads Node, tests/builds Vue UI, packages all JARs).
+./mvnw -B -ntp clean install
+
+# Backend + UI iteration loop. NOTE: -am pulls in bootui-ui (the starter depends on it), so the Vue app IS rebuilt.
+./mvnw -pl bootui-core,bootui-autoconfigure,bootui-spring-boot-starter,bootui-sample-app -am install
+# To genuinely skip the Vue rebuild, drop -am (works once bootui-ui has been installed at least once).
+./mvnw -pl bootui-core,bootui-autoconfigure,bootui-spring-boot-starter,bootui-sample-app install
+
+# Fastest sample app launch (smoke-test path: http://localhost:8080/bootui).
+./mvnw -o -ntp -pl bootui-sample-app -Dmaven.test.skip=true spring-boot:run -Dspring-boot.run.profiles=dev
+# If offline mode misses a dependency, drop -o once:
+./mvnw -ntp -pl bootui-sample-app -Dmaven.test.skip=true spring-boot:run -Dspring-boot.run.profiles=dev
+
+# Single test class / single test method.
+./mvnw -pl bootui-core test -Dtest=SecretMaskerTests
+./mvnw -pl bootui-core test -Dtest=SecretMaskerTests#detectsCommonSecretKeys
+
+# Front-end inner loop (Vite dev server with HMR; proxies /bootui/api/* to a running sample app).
+(cd bootui-ui/src/main/frontend && npm install && npm run dev)
+# Front-end unit tests (Vitest + Vue Test Utils + jsdom; also run by Maven's test phase unless -DskipTests is set).
+(cd bootui-ui/src/main/frontend && npm test)
+# After changing UI code that needs to be re-bundled into the JAR:
+./mvnw -pl bootui-ui install
+
+# Browser end-to-end suite (required for UI, browser-facing API, or sample-app changes).
+(cd bootui-sample-app/e2e && npm ci && npx playwright install --with-deps chromium && npm test)
+
+# Maven Central release path for non-SNAPSHOT versions.
+./mvnw -B -ntp -Prelease clean deploy
+```
+
+### Inner loop: launch the sample app fast, and isolate worktrees
+
+Use the fast sample-app launch command from the Build/run/test block above (only the sample module,
+`-Dmaven.test.skip=true`, `dev` profile).
+
+Do **not** add `-am` to `spring-boot:run`: Maven applies the goal to every selected reactor project, including the
+parent/core/UI modules, and those modules have no main class. Use `-am` for build/test reactor work instead:
+
+```bash
+# Test the sample app the same way.
+./mvnw -pl bootui-sample-app -am test
+```
+
+When working from **multiple git worktrees in parallel**, avoid a shared `install`: every worktree builds the same
+`com.julien-dubois.bootui:*` version, so installing overwrites the others in the shared `~/.m2/repository`. If you need
+to launch the sample app against local upstream module changes, install into an isolated local repository and run from
+that same repo:
+
+```bash
+# Per-invocation, or set in a per-worktree (git-ignored) .mvn/maven.config file: -Dmaven.repo.local=.m2
+./mvnw -Dmaven.repo.local=.m2 -ntp -pl bootui-sample-app -am -DskipTests install
+./mvnw -Dmaven.repo.local=.m2 -o -ntp -pl bootui-sample-app -Dmaven.test.skip=true spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+### Live UI iteration (hot reload)
+
+Editing Vue source does **not** hot-reload the Maven-served console. `spring-boot:run` (and the app's `/bootui` URL)
+serves the **pre-built** bundle copied into the classpath at build time, so UI edits only appear after
+`./mvnw -pl bootui-ui install` plus a restart. For a fast loop with hot-module reload (HMR) — including live/visual
+iteration in the in-app browser (e.g. when using the Impeccable skill) — run two processes and open the **Vite** URL,
+**not** the Maven one:
+
+1. **Backend (REST API).** Run the `Dev server (sample app)` script in `.github/github-app.yml`, or the fast sample-app
+   launch command above. Serves `http://localhost:8080/bootui` (or `$COPILOT_PORT` in the Copilot app).
+2. **Frontend (HMR).** Run the `Vite UI dev server` script, or `(cd bootui-ui/src/main/frontend && npm install && npm run
+   dev)`. Serves `http://localhost:5173/bootui/` and proxies `/bootui/api/*` to the backend.
+
+Open **`http://localhost:5173/bootui/`** (the Vite server) to see edits live — the Maven `/bootui` URL keeps showing the
+old bundle until you re-run `./mvnw -pl bootui-ui install`. Point the proxy at a non-default backend port with
+`BOOTUI_API_PROXY_TARGET` (the Copilot app's `Vite UI dev server` script sets this to `$COPILOT_PORT` automatically).
+State-changing panel actions work through the proxy: `LocalhostOnlyFilter` compares the `Origin` host only (not port),
+so the browser's `:5173` origin is accepted against the `:8080`/`$COPILOT_PORT` host.
+
+CI (`.github/workflows/build.yml`) runs `./mvnw -B -ntp clean install` on Java 17, which includes the frontend Vitest
+suite through Maven, installs Playwright Chromium, and runs `bootui-sample-app/e2e` with `npm test`. CodeQL covers
+Java/Kotlin and JavaScript/TypeScript when code scanning is enabled. The release workflow (`.github/workflows/release.yml`)
+publishes `v*` tags to Maven Central through the `release` Maven profile and the Sonatype Central Publishing plugin.
+
+## Formatting before commits and PRs
+
+- Before committing, pushing, creating/updating a PR, or marking a PR ready, run the formatters for the areas touched by
+  the change; after broad AI-generated edits, run all of them:
+
+```bash
+./mvnw -B -ntp spotless:apply
+(cd bootui-ui/src/main/frontend && npm run format)
+(cd bootui-sample-app/e2e && npm run format)
+```
+
+- Do not commit or create/update a PR until the same formatting checks CI uses pass:
+
+```bash
+./mvnw -B -ntp spotless:check
+(cd bootui-ui/src/main/frontend && npm run format:check)
+(cd bootui-sample-app/e2e && npm run format:check)
+```
+
+## Release plumbing (Maven Central)
+
+A few subtle constraints that have already burned us in past releases — preserve them when touching `pom.xml` files or
+the release profile:
+
+- **Source-less modules (`bootui-ui`, `bootui-spring-boot-starter`) must attach their empty `javadoc.jar` at
+  phase `package`, not `verify`.** The parent's `release` profile binds `maven-source-plugin`, `maven-javadoc-plugin`,
+  and `maven-gpg-plugin:sign` all to `verify`, and gpg runs before any child-pom executions in the same phase. If the
+  empty javadoc is attached at `verify`, gpg signs everything *except* the javadoc.jar, and Sonatype Central rejects the
+  deployment with `Missing signature for file: ...-javadoc.jar`. If you add another source-less module, copy the
+  existing `attach-empty-javadocs` execution (phase `package`, classifier `javadoc`, `skipIfEmpty=false`, fed from
+  `target/empty-javadocs`).
+- **The signing GPG public key must be queryable by fingerprint on `keys.openpgp.org` and/or `keyserver.ubuntu.com`.**
+  Sonatype Central validates signatures against those keyservers; if the public key isn't there, every signature comes
+  back `Invalid signature ... Could not find a public key by the key fingerprint`. After rotating the `GPG_PRIVATE_KEY`
+  secret, re-publish the matching public key. On macOS, `gpg --send-keys` often fails with `Invalid argument` from
+  dirmngr; the reliable fallback is the HTTPS upload APIs (`POST https://keys.openpgp.org/vks/v1/upload` with a JSON
+  `{"keytext": ...}` body, and `POST https://keyserver.ubuntu.com/pks/add` with form field `keytext`).
+- **A failed deployment still consumes the version coordinate in Central.** Once the publishing plugin uploads
+  `com.julien-dubois.bootui:<artifact>:<version>` — even if validation rejects it — you cannot re-upload that exact GAV
+  without dropping the failed deployment from the Sonatype Central Portal first. The default path is to run the `Release`
+  workflow with a new version so it bumps the codebase, commits, tags, and publishes in one run.
+- **Use the `Release` workflow (`.github/workflows/release.yml`) to bump versions** rather than running `versions:set` by
+  hand. It runs `versions:set`, updates the `docs/SETUP.md` install snippet (the public `README.md` only links to the
+  docs site), *and* bumps every npm `package.json` / `package-lock.json` (root docs site, `bootui-ui` frontend, and the
+  `bootui-sample-app/e2e` suite) via `npm version --no-git-tag-version`, then verify-builds, commits, tags, and
+  publishes. Manual `versions:set` skips the install-snippet rewrite and the npm bumps, leaving them pointing at a stale
+  (and possibly never-published) version.
+- **The sample app is excluded from release deploys** via `<maven.deploy.skip>true</maven.deploy.skip>` in
+  `bootui-sample-app/pom.xml`; keep it that way — it must still be built so the central-publishing plugin sees the full
+  reactor, but it must not be published.
+
+## Module topology
+
+```text
+bootui-core                  DTO records (core/dto/*), SecretMasker, BootUiInfo — no Spring dependency
+bootui-autoconfigure         BootUiAutoConfiguration, @RestController endpoints, safety filters, config overrides, OSV scanning
+bootui-spring-boot-starter   Drop-in dependency: pulls autoconfigure + ui + spring-boot-starter-web + actuator
+bootui-ui                    Vue 3 + Vite SPA; built into META-INF/resources/bootui/ via frontend-maven-plugin
+bootui-sample-app            Reference Spring Boot 4 app used for demos and integration testing
+```
+
+`bootui-ui` has **no Java sources**. Its Maven build runs `npm ci` and `npm run build` at `generate-resources`, runs
+`npm run test` during the Maven `test` phase (skipped by `-DskipTests`), then `maven-resources-plugin` copies
+`src/main/frontend/dist/` into `target/classes/META-INF/resources/bootui/`. Spring Boot then serves that classpath path
+automatically — consumers must never need npm.
+
+## Activation & safety model (critical)
+
+- Two autoconfigurations are registered (not component-scanned) in
+  `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`: `BootUiAutoConfiguration` and
+  `BootUiSpringSecurityAutoConfiguration` (the latter permits BootUI routes and wires SPA-friendly CSRF when Spring
+  Security is on the classpath). `BootUiAutoConfiguration` is gated by `BootUiActivationCondition`,
+  `@ConditionalOnWebApplication(SERVLET)`, and `@ConditionalOnClass(DispatcherServlet)`. New controllers must be added
+  to `@Import(...)` on `BootUiAutoConfiguration`.
+- Activation rules (see `BootUiActivationCondition.resolve`): `bootui.enabled=ON|OFF` wins, otherwise an active profile
+  in `bootui.enabled-profiles` (`dev`, `local` by default) or `spring-boot-devtools` on the classpath turns BootUI on.
+  `bootui.disabled-profiles` (`prod`, `production`) force-off unless `bootui.enabled=ON`.
+- `LocalhostOnlyFilter` is registered with `Integer.MIN_VALUE` order on `/bootui/*` and `/bootui/api/*` and **fails
+  closed** for non-loopback callers. Beyond the loopback source check it also validates the `Host` header against the
+  built-in loopback names plus `bootui.allowed-hosts` (DNS-rebinding defense) and rejects cross-site state-changing
+  requests via `Origin`/`Sec-Fetch-Site` (CSRF defense that works without Spring Security). Opt-out of all of this is
+  `bootui.allow-non-localhost=true` only.
+- `PanelAccessFilter` runs after `LocalhostOnlyFilter` and enforces per-panel `bootui.panels.*` settings via the
+  `BootUiPanels` registry: it blocks requests to disabled panels and rejects state-changing methods on action-capable
+  panels marked read-only. Register new action endpoints in `BootUiPanels` so these toggles apply.
+- Four `EnvironmentPostProcessor`s are registered in `META-INF/spring.factories` and run while BootUI is active:
+  `BootUiOverridesEnvironmentPostProcessor` (runtime config overrides), `BootUiActuatorDefaultsEnvironmentPostProcessor`
+  (local Actuator/tracing defaults), `BootUiStartupEnvironmentPostProcessor` (startup-timeline buffer), and
+  `BootUiWebApplicationTypeEnvironmentPostProcessor` (forces servlet web type when active and otherwise non-web). Add new
+  post-processors to that same file.
+- BootUI contributes local Actuator defaults via `BootUiActuatorDefaultsEnvironmentPostProcessor` while active. Host
+  `management.*` settings must still win over BootUI defaults.
+- Fail-closed mindset: when ambiguous, BootUI should be **disabled and silent**, not exposed.
+
+## API & DTO conventions
+
+- All endpoints live under `/bootui/api/**`. The browser UI is at `/bootui/` (Vite `base: '/bootui/'`, hash router).
+- Never return raw Actuator descriptors. Map them to immutable `record` DTOs in the
+  `io.github.jdubois.bootui.core.dto` package so the UI binds to a stable shape. Add each new DTO as its own
+  standalone `record` file in that package (one record per file), not nested in a shared class or in feature packages.
+- Actuator endpoints are consumed in-process via `ObjectProvider<XxxEndpoint>` (see `BeansController`,
+  `LoggersController`). Always handle `getIfAvailable() == null` by returning an empty DTO — Actuator may be partially
+  disabled.
+- Any code path that surfaces a property name/value to the browser **must** route it through `SecretMasker` (or honor
+  `BootUiProperties.exposeValues`) before serialization. See `ConfigController.toDto` and
+  `ConfigOverrideService.displayValue` for the pattern.
+- Do not perform dependency vulnerability lookups on page load. The Vulnerabilities panel lists local dependency
+  inventory first and calls OSV.dev only after the explicit `/bootui/api/vulnerabilities/scan` action; honor
+  `bootui.vulnerabilities.osv-enabled=false`.
+- Dev Services must sanitize service connection details, keep Docker Compose entries as startup snapshots, cap service
+  logs by `bootui.dev-services.log-tail-bytes`, and leave restart controls disabled unless
+  `bootui.dev-services.restart-enabled=true`.
+
+## Configuration overrides flow
+
+Runtime config edits are non-trivial — they use two cooperating components:
+
+1. `BootUiOverridesEnvironmentPostProcessor` (wired via `META-INF/spring.factories`) runs at `HIGHEST_PRECEDENCE + 10`
+   and `addFirst`s a `BootUiOverridesPropertySource` populated from `.bootui/application-bootui.properties` (path
+   configurable via `bootui.overrides-file`).
+2. `ConfigOverrideService` mutates that same property source at runtime and persists via `ConfigOverridesFileStore`.
+
+Because already-bound `@ConfigurationProperties` beans won't auto-rebind, every mutation returns a
+`ConfigOverrideResult` whose `message` warns about restart caveats. Preserve that contract when adding new override
+paths.
+
+## Current panel surface
+
+`bootui-ui/src/main/frontend/src/routes.js` is the source of truth for routes and sidebar grouping; `docs/FEATURES.md`
+mirrors it. The stance is to harden **all visible panels**, not hide newer ones. Keep API, UI, `docs/FEATURES.md`, and
+Playwright coverage aligned across these nine groups (current order):
+
+- **Overview**: Overview, GitHub
+- **Advisors**: Architecture, REST API, Spring, Hibernate, Memory, Security, Pentesting, Vulnerabilities
+- **Runtime**: Health, HTTP Sessions, Metrics, Live Memory, JVM Tuning, Heap Dump, Threads, Startup Timeline, GraalVM
+- **Configuration**: Configuration, Profile Diff, Loggers, Beans, Conditions, Mappings
+- **Database**: Database Connection Pools, Spring Data, Flyway, Liquibase
+- **Security**: Spring Security, Security Logs
+- **Services**: Scheduled Tasks, Spring Cache, AI Usage
+- **Diagnostics**: Traces, Log Tail, HTTP Exchanges, HTTP Probe
+- **Developer Tools**: DevTools, Dev Services, Copilot, Claude Code
+- **Advisors** panels read their backing analysis rules from the `docs/*-CHECKS.md` files (e.g. `ARCHITECTURE-CHECKS.md`,
+  `SPRING-CHECKS.md`, `HIBERNATE-CHECKS.md`, `MEMORY-CHECKS.md`, `SECURITY-CHECKS.md`, `PENTEST-CHECKS.md`,
+  `REST-API-CHECKS.md`, `GRAALVM-READINESS-CHECKS.md`); update the matching doc when changing advisor logic.
+- The Claude Code panel reuses `views/Copilot.vue` (`component: Copilot`); there is no separate `ClaudeCode.vue`.
+- The route order and `meta.group` keys in `routes.js` (each `group` must exist in its `groups` map), `docs/FEATURES.md`,
+  and the sample-app navigation test (`bootui-sample-app/e2e/tests/app-shell.spec.js`) must stay consistent when panels
+  are added, renamed, hidden, or reordered. When renaming a route path, add a redirect from the old path (see the
+  redirect block at the end of `routes.js`).
+- New browser-facing behavior usually needs a stable DTO, controller tests where practical, Vue route/view updates,
+  `docs/FEATURES.md` updates, and an e2e spec in `bootui-sample-app/e2e/tests/` when the UI or sample app behavior
+  changes.
+- Feature screenshots in `docs/images/bootui-*.webp` should stay at the current 1600x900 px size so the feature page
+  remains visually consistent. They are captured as PNG and re-encoded to WebP (quality 80) by the screenshot script to
+  keep the documentation site lightweight. When adding or refreshing screenshots, seed the sample app or local state with
+  realistic non-sensitive sample data that demonstrates how the panel works instead of capturing empty/default states.
+  **Always scroll to the top before capturing** — reset both the window and the `.bootui-workspace` scroll container
+  (`page.evaluate(() => { window.scrollTo(0, 0); document.querySelector('.bootui-workspace')?.scrollTo(0, 0) })`) after
+  the prepare step and before `page.screenshot()`. The main content scrolls inside `.bootui-workspace` (not the
+  document), and `waitFor` / `waitForText` helpers scroll matching elements into view, which otherwise leaves the
+  viewport at the bottom of the panel so the screenshot shows empty space instead of the panel header.
+
+## Java conventions
+
+- Package root: `io.github.jdubois.bootui.<module>`. Simple controllers live in `...autoconfigure.web`; more complex
+  features with their own backing services live in a dedicated sub-package (e.g., `...autoconfigure.architecture`,
+  `...autoconfigure.pentesting`, `...autoconfigure.otlp`). Safety code is in `...autoconfigure.safety`, override plumbing
+  in `...autoconfigure.config`.
+- DTOs are immutable Java `record`s (Jackson-friendly with Spring Boot defaults — no annotations needed).
+- Compiler is configured with `-parameters` (root `pom.xml` `<parameters>true</parameters>`); rely on that for
+  `@RequestBody`/`@PathVariable` binding without explicit `value=` attributes.
+- 4-space indent for Java/XML, 2-space for JS/Vue/JSON/YAML/MD (`.editorconfig`). UTF-8, LF, trailing newline.
+- Keep external/network behavior explicit and bounded: OSV scanning is user-initiated, timeouts and max package/advisory
+  limits come from `BootUiProperties.Dependencies`, and failures should return a clear error status while preserving
+  local data.
+
+## Frontend conventions
+
+- Vue 3 **Composition API with `<script setup>`**, Vue Router 5 with `createWebHashHistory()`, Bootstrap 5.3 +
+  bootstrap-icons. The codebase is plain JavaScript (`.js` / `.vue`); there is no TypeScript.
+- API calls use **relative** paths (`fetch('api/overview')`) so they resolve against the `/bootui/` SPA base — do not
+  hardcode `/bootui/api/...`.
+- New panel = add a `views/Xxx.vue`, register the route in `src/main/frontend/src/routes.js` with an `icon`, `title`,
+  and `group` in `meta`; the sidebar in `App.vue` renders from `router.options.routes`.
+- Frontend unit tests use Vitest with Vue Test Utils and jsdom. Add focused `*.test.js` coverage for reusable
+  composables/components and UI logic where Playwright would be too broad or slow.
+- The Vite dev server proxies `/bootui/api/*` to the running sample app, but packaged assets must work from `/bootui/`
+  without requiring consumers to install Node. For hot-reload UI iteration, open the Vite URL (`:5173/bootui/`), not the
+  Maven-served `/bootui` — see "Live UI iteration (hot reload)" above.
+
+## Contribution conventions (from `CONTRIBUTING.md`)
+
+- Branch names start with the GitHub username, e.g. `jdubois/improve-config-ui`.
+- Keep PRs small and update `docs/` whenever public behavior changes. The PR template's checklist (
+  `./mvnw clean install`, sample-app smoke test, no committed secrets) is enforced in review.
+- Run focused Vitest tests for changed Vue composables/components, and run the Playwright suite when changing browser
+  flows, browser-facing API response shapes, visible routes, or sample-app behavior.
+- The sample app is for demos/integration tests and has `<maven.deploy.skip>true</maven.deploy.skip>`; do not publish it
+  as part of Maven Central releases.
+- Spring Boot 3.x compatibility is **out of scope** — don't add compatibility shims.
+
+## Design context
+
+BootUI's design system is documented at the **repo root** (kept out of `docs/` so it isn't published to the docs
+site). Read and honor both before changing anything the user sees in `bootui-ui`:
+
+- **`PRODUCT.md`** — strategic context: register (`product`), users/personas, purpose, brand personality,
+  anti-references, the five design principles, and the accessibility bar.
+- **`DESIGN.md`** — the visual system in Stitch DESIGN.md format, with `.impeccable/design.json` as its machine
+  sidecar: design tokens, typography, elevation, and component specs. North star: **"The Calm Control Room."**
+
+Load-bearing rules when touching the UI:
+
+- **Accessibility is WCAG 2.1 AA in *both* light and dark themes.** Verify contrast for semantic status colors
+  (log levels, severities) and code/identifier text on tinted or selected backgrounds — Bootstrap's contextual
+  colors are tuned for light backgrounds only. Every interactive control needs a visible, branded focus ring.
+- **Use Bootstrap, never look like default Bootstrap** — no AdminLTE / SB-Admin admin-template look, default
+  blue, or untouched utility-class styling.
+- **The green→blue gradient means "active / selected" only** — never a hero backdrop or heading fill.
+  Backgrounds stay cool (no cream/sand). Machine output is monospace; BootUI's own explanation is sans.
+- **Never surprise the user** — no network calls, scans, or mutations on render; honor `prefers-reduced-motion`.
+
+These files are also read by the `impeccable` design skill; re-run `/impeccable document` if the visual system
+drifts from the code.
