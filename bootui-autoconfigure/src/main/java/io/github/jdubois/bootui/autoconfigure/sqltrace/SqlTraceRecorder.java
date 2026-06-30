@@ -1,5 +1,6 @@
 package io.github.jdubois.bootui.autoconfigure.sqltrace;
 
+import io.github.jdubois.bootui.autoconfigure.filter.OttlExpressionFilter;
 import io.github.jdubois.bootui.autoconfigure.idle.IdleReclaimable;
 import io.github.jdubois.bootui.core.dto.SqlTraceGroupDto;
 import io.github.jdubois.bootui.core.dto.SqlTraceStatsDto;
@@ -83,6 +84,7 @@ public final class SqlTraceRecorder implements IdleReclaimable {
     private final int maxSqlLength;
     private final int maxParameterLength;
     private final int nPlusOneThreshold;
+    private final List<OttlExpressionFilter.Rule<CapturedStatement>> excludeStatementRules;
 
     private final Deque<CapturedStatement> buffer = new ArrayDeque<>();
     private final Object lock = new Object();
@@ -103,6 +105,28 @@ public final class SqlTraceRecorder implements IdleReclaimable {
             int maxSqlLength,
             int maxParameterLength,
             int nPlusOneThreshold) {
+        this(
+                enabled,
+                recording,
+                captureParameters,
+                maxEntries,
+                slowQueryThresholdMillis,
+                maxSqlLength,
+                maxParameterLength,
+                nPlusOneThreshold,
+                new String[0]);
+    }
+
+    public SqlTraceRecorder(
+            boolean enabled,
+            boolean recording,
+            boolean captureParameters,
+            int maxEntries,
+            long slowQueryThresholdMillis,
+            int maxSqlLength,
+            int maxParameterLength,
+            int nPlusOneThreshold,
+            String[] excludeStatementExpressions) {
         this.enabled = enabled;
         this.recording = new AtomicBoolean(recording);
         this.captureParameters = captureParameters;
@@ -111,6 +135,7 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         this.maxSqlLength = Math.max(16, maxSqlLength);
         this.maxParameterLength = Math.max(8, maxParameterLength);
         this.nPlusOneThreshold = Math.max(2, nPlusOneThreshold);
+        this.excludeStatementRules = SqlTraceStatementFilter.compileExclusionRules(excludeStatementExpressions);
     }
 
     public boolean isEnabled() {
@@ -190,6 +215,9 @@ public final class SqlTraceRecorder implements IdleReclaimable {
                 thread,
                 currentTraceId(),
                 captureParameters ? List.copyOf(parameters == null ? List.of() : parameters) : List.of());
+        if (SqlTraceStatementFilter.isExcluded(entry, excludeStatementRules)) {
+            return;
+        }
         synchronized (lock) {
             buffer.addLast(entry);
             while (buffer.size() > maxEntries) {

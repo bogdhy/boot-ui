@@ -2,6 +2,7 @@ package io.github.jdubois.bootui.autoconfigure.web;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.github.jdubois.bootui.autoconfigure.BootUiProperties;
+import io.github.jdubois.bootui.autoconfigure.filter.OttlExpressionFilter;
 import io.github.jdubois.bootui.autoconfigure.otlp.NormalizedSpan;
 import io.github.jdubois.bootui.autoconfigure.otlp.OtlpSpanDecoder;
 import io.github.jdubois.bootui.autoconfigure.otlp.TelemetrySpanFilter;
@@ -45,10 +46,14 @@ public class OtlpReceiverController {
 
     private final BootUiProperties properties;
 
+    private final List<OttlExpressionFilter.Rule<NormalizedSpan>> excludeSpanRules;
+
     public OtlpReceiverController(TelemetryStore store, OtlpSpanDecoder decoder, BootUiProperties properties) {
         this.store = store;
         this.decoder = decoder;
         this.properties = properties;
+        this.excludeSpanRules =
+                TelemetrySpanFilter.compileExclusionRules(properties.getTelemetry().getExcludeSpanExpressions());
     }
 
     private static ResponseEntity<byte[]> okResponse() {
@@ -81,6 +86,9 @@ public class OtlpReceiverController {
             boolean excludeSelf = telemetry.isExcludeSelfSpans();
             int kept = 0;
             for (NormalizedSpan span : spans) {
+                if (TelemetrySpanFilter.isExcluded(span, excludeSpanRules)) {
+                    continue;
+                }
                 boolean selfSpan = excludeSelf && TelemetrySpanFilter.isSelfSpan(span, apiPath);
                 if (store.add(span, selfSpan)) {
                     kept++;

@@ -911,6 +911,11 @@ public class BootUiProperties {
          */
         private int nPlusOneThreshold = 5;
 
+        /**
+         * OTTL-like JDBC statement predicates to drop before statements enter the SQL trace buffer.
+         */
+        private String[] excludeStatementExpressions = {};
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -973,6 +978,14 @@ public class BootUiProperties {
 
         public void setNPlusOneThreshold(int nPlusOneThreshold) {
             this.nPlusOneThreshold = nPlusOneThreshold;
+        }
+
+        public String[] getExcludeStatementExpressions() {
+            return excludeStatementExpressions;
+        }
+
+        public void setExcludeStatementExpressions(String[] excludeStatementExpressions) {
+            this.excludeStatementExpressions = excludeStatementExpressions;
         }
     }
 
@@ -1131,6 +1144,11 @@ public class BootUiProperties {
         private boolean excludeSelfSpans = true;
 
         /**
+         * OTTL-like span predicates to drop before spans enter BootUI's local trace store.
+         */
+        private String[] excludeSpanExpressions = {};
+
+        /**
          * Maximum payload size (bytes) accepted by the OTLP receiver.
          */
         private int maxRequestBytes = 8 * 1024 * 1024;
@@ -1173,6 +1191,14 @@ public class BootUiProperties {
 
         public void setExcludeSelfSpans(boolean excludeSelfSpans) {
             this.excludeSelfSpans = excludeSelfSpans;
+        }
+
+        public String[] getExcludeSpanExpressions() {
+            return excludeSpanExpressions;
+        }
+
+        public void setExcludeSpanExpressions(String[] excludeSpanExpressions) {
+            this.excludeSpanExpressions = excludeSpanExpressions;
         }
 
         public int getMaxRequestBytes() {

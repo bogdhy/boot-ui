@@ -1,6 +1,7 @@
 package io.github.jdubois.bootui.autoconfigure.otlp;
 
 import io.github.jdubois.bootui.autoconfigure.BootUiProperties;
+import io.github.jdubois.bootui.autoconfigure.filter.OttlExpressionFilter;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.Value;
@@ -24,9 +25,13 @@ public final class BootUiSpanExporter implements SpanExporter {
 
     private final BootUiProperties properties;
 
+    private final List<OttlExpressionFilter.Rule<NormalizedSpan>> excludeSpanRules;
+
     public BootUiSpanExporter(TelemetryStore store, BootUiProperties properties) {
         this.store = store;
         this.properties = properties;
+        this.excludeSpanRules =
+                TelemetrySpanFilter.compileExclusionRules(properties.getTelemetry().getExcludeSpanExpressions());
     }
 
     @Override
@@ -39,6 +44,9 @@ public final class BootUiSpanExporter implements SpanExporter {
         boolean excludeSelf = telemetry.isExcludeSelfSpans();
         for (SpanData span : spans) {
             NormalizedSpan normalized = toNormalized(span);
+            if (TelemetrySpanFilter.isExcluded(normalized, excludeSpanRules)) {
+                continue;
+            }
             boolean selfSpan = excludeSelf && TelemetrySpanFilter.isSelfSpan(normalized, apiPath);
             store.add(normalized, selfSpan);
         }

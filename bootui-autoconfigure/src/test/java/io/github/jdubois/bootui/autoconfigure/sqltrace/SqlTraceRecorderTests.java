@@ -41,6 +41,39 @@ class SqlTraceRecorderTests {
     }
 
     @Test
+    void excludesStatementsMatchingConfiguredExpressions() {
+        SqlTraceRecorder recorder = new SqlTraceRecorder(
+                true,
+                true,
+                false,
+                10,
+                100,
+                2000,
+                200,
+                5,
+                new String[] {"IsMatch(sql, \".*(token_entry|saga_entry).*\")", "category == \"DDL\""});
+
+        record(recorder, Category.SELECT, "select * from token_entry", 0);
+        record(recorder, Category.SELECT, "select * from orders", 0);
+        record(recorder, Category.DDL, "create table sample(id bigint)", 0);
+
+        assertThat(recorder.recent())
+                .extracting(SqlTraceRecorder.CapturedStatement::sql)
+                .containsExactly("select * from orders");
+        assertThat(recorder.totalCaptured()).isEqualTo(1);
+    }
+
+    @Test
+    void ignoresInvalidStatementExclusionExpressions() {
+        SqlTraceRecorder recorder = new SqlTraceRecorder(
+                true, true, false, 10, 100, 2000, 200, 5, new String[] {"IsMatch(sql, \"[\")"});
+
+        record(recorder, Category.SELECT, "select 1", 0);
+
+        assertThat(recorder.recent()).hasSize(1);
+    }
+
+    @Test
     void suspendForIdleClearsAndStopsRecordingUntilResumed() {
         SqlTraceRecorder recorder = recorder(true, false, 10, 100);
         record(recorder, Category.SELECT, "select 1", 0);

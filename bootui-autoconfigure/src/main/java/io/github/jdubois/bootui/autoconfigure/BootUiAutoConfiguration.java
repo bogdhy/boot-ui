@@ -522,7 +522,8 @@ public class BootUiAutoConfiguration {
                 sqlTrace.getSlowQueryThresholdMillis(),
                 sqlTrace.getMaxSqlLength(),
                 sqlTrace.getMaxParameterLength(),
-                sqlTrace.getNPlusOneThreshold());
+                sqlTrace.getNPlusOneThreshold(),
+                sqlTrace.getExcludeStatementExpressions());
     }
 
     @Bean

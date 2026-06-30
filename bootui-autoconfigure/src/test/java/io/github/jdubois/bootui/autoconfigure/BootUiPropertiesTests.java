@@ -180,6 +180,13 @@ class BootUiPropertiesTests {
     }
 
     @Test
+    void defaultTraceExclusionExpressionsAreEmpty() {
+        BootUiProperties props = new BootUiProperties();
+        assertThat(props.getTelemetry().getExcludeSpanExpressions()).isEmpty();
+        assertThat(props.getSqlTrace().getExcludeStatementExpressions()).isEmpty();
+    }
+
+    @Test
     void defaultClaudeCodeRawRevealIsFalse() {
         BootUiProperties props = new BootUiProperties();
         assertThat(props.getClaudeCode().isAllowRawReveal()).isFalse();
@@ -211,6 +218,19 @@ class BootUiPropertiesTests {
         BootUiProperties props = bind(env);
 
         assertThat(props.getTrustedProxies()).containsExactly("172.16.0.0/12", "192.168.0.0/16");
+    }
+
+    @Test
+    void bindsTraceExclusionExpressions() {
+        MockEnvironment env = new MockEnvironment();
+        env.setProperty("bootui.telemetry.exclude-span-expressions[0]", "name == \"Transaction.commit\"");
+        env.setProperty("bootui.sql-trace.exclude-statement-expressions[0]", "IsMatch(sql, \".*token_entry.*\")");
+
+        BootUiProperties props = bind(env);
+
+        assertThat(props.getTelemetry().getExcludeSpanExpressions()).containsExactly("name == \"Transaction.commit\"");
+        assertThat(props.getSqlTrace().getExcludeStatementExpressions())
+                .containsExactly("IsMatch(sql, \".*token_entry.*\")");
     }
 
     @Test

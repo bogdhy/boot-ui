@@ -231,6 +231,7 @@ Panel settings are consistent across the UI and API:
 | `bootui.sql-trace.max-sql-length`         | `2000`  | Maximum retained SQL text length; longer statements are truncated.                                                                           |
 | `bootui.sql-trace.max-parameter-length`   | `200`   | Maximum retained length of a single captured parameter value.                                                                                |
 | `bootui.sql-trace.n-plus-one-threshold`   | `5`     | Number of times an identical `SELECT` must repeat within the buffer before it is flagged as a likely N+1 access pattern (minimum `2`).       |
+| `bootui.sql-trace.exclude-statement-expressions` | `[]` | OTTL-like predicates for dropping JDBC statements before they enter the SQL Trace buffer. Supports `IsMatch(sql, "regex")`, `sql == "..."`, `category == "SELECT"`, and `and`. Invalid expressions are ignored. |
 
 ### Live Activity
 
@@ -255,6 +256,7 @@ read-only.
 | `bootui.telemetry.max-spans-per-trace`       | `500`     | Maximum spans retained per trace.                                                                     |
 | `bootui.telemetry.max-attribute-value-bytes` | `4096`    | Maximum attribute string length before truncation.                                                    |
 | `bootui.telemetry.exclude-self-spans`        | `true`    | Drop ingested spans whose route/path targets BootUI before they enter the local trace store.          |
+| `bootui.telemetry.exclude-span-expressions`  | `[]`      | OTTL-like predicates for dropping spans before they enter the local trace store. Supports `IsMatch(name, "regex")`, `IsMatch(attributes["key"], "regex")`, `name == "..."`, `attributes["key"] == "..."`, and `and`. Invalid expressions are ignored. |
 | `bootui.telemetry.max-request-bytes`         | `8388608` | Maximum accepted OTLP request body size.                                                              |
 
 ### HTTP Exchanges

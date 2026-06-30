@@ -79,6 +79,36 @@ class BootUiSpanExporterTests {
     }
 
     @Test
+    void dropsSpansMatchingConfiguredExpressions() {
+        BootUiProperties properties = new BootUiProperties();
+        properties.getTelemetry()
+                .setExcludeSpanExpressions(new String[] {
+                    "IsMatch(attributes[\"db.statement\"], \".*(token_entry|_event_entry|saga_entry).*\")",
+                    "name == \"Transaction.commit\""
+                });
+        TelemetryStore store = new TelemetryStore(properties.getTelemetry());
+        SdkTracerProvider provider = tracerProvider(new BootUiSpanExporter(store, properties));
+        try {
+            Tracer tracer = provider.get("bootui-test-scope");
+            Span dropped = tracer.spanBuilder("SELECT token_entry")
+                    .setAttribute("db.statement", "select * from token_entry")
+                    .startSpan();
+            dropped.end();
+            Span kept = tracer.spanBuilder("GET /api/orders")
+                    .setAttribute("http.route", "/api/orders")
+                    .startSpan();
+            kept.end();
+            provider.forceFlush().join(1, TimeUnit.SECONDS);
+
+            assertThat(store.allSpansSnapshot()).singleElement().satisfies(span -> {
+                assertThat(span.name()).isEqualTo("GET /api/orders");
+            });
+        } finally {
+            provider.shutdown().join(1, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void doesNotCaptureSpansWhenTelemetryIsDisabled() {
         BootUiProperties properties = new BootUiProperties();
         properties.getTelemetry().setEnabled(false);
