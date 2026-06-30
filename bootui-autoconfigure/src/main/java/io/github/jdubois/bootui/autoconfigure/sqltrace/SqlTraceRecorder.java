@@ -4,6 +4,7 @@ import io.github.jdubois.bootui.autoconfigure.filter.OttlExpressionFilter;
 import io.github.jdubois.bootui.autoconfigure.idle.IdleReclaimable;
 import io.github.jdubois.bootui.core.dto.SqlTraceGroupDto;
 import io.github.jdubois.bootui.core.dto.SqlTraceStatsDto;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -34,49 +35,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class SqlTraceRecorder implements IdleReclaimable {
 
     static final int TOP_STATEMENTS_LIMIT = 20;
-
-    /** Kind of JDBC statement the execution originated from. */
-    public enum StatementType {
-        STATEMENT,
-        PREPARED,
-        CALLABLE
-    }
-
-    /** Coarse SQL classification derived from the statement text. */
-    public enum Category {
-        SELECT,
-        INSERT,
-        UPDATE,
-        DELETE,
-        DDL,
-        OTHER
-    }
-
-    /**
-     * A single immutable captured execution. Parameter bindings are only retained
-     * when capture is enabled; callers decide whether to expose them.
-     */
-    public record CapturedStatement(
-            long id,
-            long timestamp,
-            String sql,
-            StatementType statementType,
-            Category category,
-            long durationMillis,
-            boolean success,
-            String errorMessage,
-            Long affectedRows,
-            int batchSize,
-            String connectionId,
-            String thread,
-            String traceId,
-            List<String> parameters) {
-
-        public CapturedStatement {
-            parameters = parameters == null ? List.of() : List.copyOf(parameters);
-        }
-    }
-
     private final boolean enabled;
     private final boolean captureParameters;
     private final int maxEntries;
@@ -85,48 +43,45 @@ public final class SqlTraceRecorder implements IdleReclaimable {
     private final int maxParameterLength;
     private final int nPlusOneThreshold;
     private final List<OttlExpressionFilter.Rule<CapturedStatement>> excludeStatementRules;
-
     private final Deque<CapturedStatement> buffer = new ArrayDeque<>();
     private final Object lock = new Object();
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicLong totalCaptured = new AtomicLong();
     private final AtomicLong evicted = new AtomicLong();
     private final AtomicBoolean recording;
-    private volatile boolean idleSuspended = false;
     private final Set<String> dataSourceNames = new ConcurrentSkipListSet<>();
     private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
-
+    private volatile boolean idleSuspended = false;
     public SqlTraceRecorder(
-            boolean enabled,
-            boolean recording,
-            boolean captureParameters,
-            int maxEntries,
-            long slowQueryThresholdMillis,
-            int maxSqlLength,
-            int maxParameterLength,
-            int nPlusOneThreshold) {
+        boolean enabled,
+        boolean recording,
+        boolean captureParameters,
+        int maxEntries,
+        long slowQueryThresholdMillis,
+        int maxSqlLength,
+        int maxParameterLength,
+        int nPlusOneThreshold) {
         this(
-                enabled,
-                recording,
-                captureParameters,
-                maxEntries,
-                slowQueryThresholdMillis,
-                maxSqlLength,
-                maxParameterLength,
-                nPlusOneThreshold,
-                new String[0]);
+            enabled,
+            recording,
+            captureParameters,
+            maxEntries,
+            slowQueryThresholdMillis,
+            maxSqlLength,
+            maxParameterLength,
+            nPlusOneThreshold,
+            new String[0]);
     }
-
     public SqlTraceRecorder(
-            boolean enabled,
-            boolean recording,
-            boolean captureParameters,
-            int maxEntries,
-            long slowQueryThresholdMillis,
-            int maxSqlLength,
-            int maxParameterLength,
-            int nPlusOneThreshold,
-            String[] excludeStatementExpressions) {
+        boolean enabled,
+        boolean recording,
+        boolean captureParameters,
+        int maxEntries,
+        long slowQueryThresholdMillis,
+        int maxSqlLength,
+        int maxParameterLength,
+        int nPlusOneThreshold,
+        String[] excludeStatementExpressions) {
         this.enabled = enabled;
         this.recording = new AtomicBoolean(recording);
         this.captureParameters = captureParameters;
@@ -136,6 +91,32 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         this.maxParameterLength = Math.max(8, maxParameterLength);
         this.nPlusOneThreshold = Math.max(2, nPlusOneThreshold);
         this.excludeStatementRules = SqlTraceStatementFilter.compileExclusionRules(excludeStatementExpressions);
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) {
+            return null;
+        }
+        String stripped = value.strip();
+        if (stripped.length() <= max) {
+            return stripped;
+        }
+        return stripped.substring(0, max) + "…";
+    }
+
+    /**
+     * Best-effort current trace id, read from the SLF4J MDC where Micrometer Tracing publishes it
+     * (the {@code traceId} correlation key). Returns {@code null} when no tracer is active or the key
+     * is absent, in which case downstream correlation falls back to its time-window heuristic. The
+     * lookup is fully guarded so SQL execution is never disrupted by a missing or misbehaving MDC.
+     */
+    private static String currentTraceId() {
+        try {
+            String traceId = org.slf4j.MDC.get("traceId");
+            return traceId == null || traceId.isBlank() ? null : traceId;
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     public boolean isEnabled() {
@@ -169,7 +150,9 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         return slowQueryThresholdMillis > 0 && durationMillis >= slowQueryThresholdMillis;
     }
 
-    /** Remembers a {@code DataSource} bean that BootUI wrapped for tracing. */
+    /**
+     * Remembers a {@code DataSource} bean that BootUI wrapped for tracing.
+     */
     public void registerDataSource(String name) {
         if (name != null && !name.isBlank()) {
             dataSourceNames.add(name);
@@ -184,37 +167,39 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         return !dataSourceNames.isEmpty();
     }
 
-    /** Records one execution, truncating oversized SQL and evicting the oldest entry when full. */
+    /**
+     * Records one execution, truncating oversized SQL and evicting the oldest entry when full.
+     */
     public void record(
-            StatementType statementType,
-            Category category,
-            String sql,
-            List<String> parameters,
-            long durationMillis,
-            boolean success,
-            String errorMessage,
-            Long affectedRows,
-            int batchSize,
-            String connectionId,
-            String thread) {
+        StatementType statementType,
+        Category category,
+        String sql,
+        List<String> parameters,
+        long durationMillis,
+        boolean success,
+        String errorMessage,
+        Long affectedRows,
+        int batchSize,
+        String connectionId,
+        String thread) {
         if (!enabled || idleSuspended || !recording.get()) {
             return;
         }
         CapturedStatement entry = new CapturedStatement(
-                sequence.incrementAndGet(),
-                System.currentTimeMillis(),
-                truncate(sql, maxSqlLength),
-                statementType == null ? StatementType.STATEMENT : statementType,
-                category == null ? Category.OTHER : category,
-                Math.max(0, durationMillis),
-                success,
-                errorMessage,
-                affectedRows,
-                Math.max(0, batchSize),
-                connectionId,
-                thread,
-                currentTraceId(),
-                captureParameters ? List.copyOf(parameters == null ? List.of() : parameters) : List.of());
+            sequence.incrementAndGet(),
+            System.currentTimeMillis(),
+            truncate(sql, maxSqlLength),
+            statementType == null ? StatementType.STATEMENT : statementType,
+            category == null ? Category.OTHER : category,
+            Math.max(0, durationMillis),
+            success,
+            errorMessage,
+            affectedRows,
+            Math.max(0, batchSize),
+            connectionId,
+            thread,
+            currentTraceId(),
+            captureParameters ? List.copyOf(parameters == null ? List.of() : parameters) : List.of());
         if (SqlTraceStatementFilter.isExcluded(entry, excludeStatementRules)) {
             return;
         }
@@ -229,7 +214,9 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         notifyListeners();
     }
 
-    /** Returns the retained executions, most recent first. */
+    /**
+     * Returns the retained executions, most recent first.
+     */
     public List<CapturedStatement> recent() {
         synchronized (lock) {
             List<CapturedStatement> snapshot = new ArrayList<>(buffer);
@@ -284,7 +271,9 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         }
     }
 
-    /** Computes aggregate counters over the retained buffer. */
+    /**
+     * Computes aggregate counters over the retained buffer.
+     */
     public SqlTraceStatsDto stats() {
         long total = 0;
         long totalDuration = 0;
@@ -324,19 +313,19 @@ public final class SqlTraceRecorder implements IdleReclaimable {
         }
         double avg = total == 0 ? 0 : (double) totalDuration / total;
         return new SqlTraceStatsDto(
-                total,
-                totalDuration,
-                maxDuration,
-                avg,
-                slow,
-                failed,
-                batches,
-                selects,
-                inserts,
-                updates,
-                deletes,
-                others,
-                evicted.get());
+            total,
+            totalDuration,
+            maxDuration,
+            avg,
+            slow,
+            failed,
+            batches,
+            selects,
+            inserts,
+            updates,
+            deletes,
+            others,
+            evicted.get());
     }
 
     /**
@@ -357,47 +346,67 @@ public final class SqlTraceRecorder implements IdleReclaimable {
             aggregate.maxDuration = Math.max(aggregate.maxDuration, entry.durationMillis());
         }
         return byStatement.values().stream()
-                .sorted(Comparator.comparingLong((Aggregate a) -> a.executions)
-                        .reversed()
-                        .thenComparing(a -> a.sql))
-                .limit(TOP_STATEMENTS_LIMIT)
-                .map(a -> new SqlTraceGroupDto(
-                        a.sql,
-                        a.category.name(),
-                        a.executions,
-                        a.totalDuration,
-                        a.maxDuration,
-                        a.category == Category.SELECT && a.executions >= nPlusOneThreshold))
-                .toList();
+            .sorted(Comparator.comparingLong((Aggregate a) -> a.executions)
+                .reversed()
+                .thenComparing(a -> a.sql))
+            .limit(TOP_STATEMENTS_LIMIT)
+            .map(a -> new SqlTraceGroupDto(
+                a.sql,
+                a.category.name(),
+                a.executions,
+                a.totalDuration,
+                a.maxDuration,
+                a.category == Category.SELECT && a.executions >= nPlusOneThreshold))
+            .toList();
     }
 
     String truncateParameter(String value) {
         return truncate(value, maxParameterLength);
     }
 
-    private static String truncate(String value, int max) {
-        if (value == null) {
-            return null;
-        }
-        String stripped = value.strip();
-        if (stripped.length() <= max) {
-            return stripped;
-        }
-        return stripped.substring(0, max) + "…";
+    /**
+     * Kind of JDBC statement the execution originated from.
+     */
+    public enum StatementType {
+        STATEMENT,
+        PREPARED,
+        CALLABLE
     }
 
     /**
-     * Best-effort current trace id, read from the SLF4J MDC where Micrometer Tracing publishes it
-     * (the {@code traceId} correlation key). Returns {@code null} when no tracer is active or the key
-     * is absent, in which case downstream correlation falls back to its time-window heuristic. The
-     * lookup is fully guarded so SQL execution is never disrupted by a missing or misbehaving MDC.
+     * Coarse SQL classification derived from the statement text.
      */
-    private static String currentTraceId() {
-        try {
-            String traceId = org.slf4j.MDC.get("traceId");
-            return traceId == null || traceId.isBlank() ? null : traceId;
-        } catch (RuntimeException ex) {
-            return null;
+    public enum Category {
+        SELECT,
+        INSERT,
+        UPDATE,
+        DELETE,
+        DDL,
+        OTHER
+    }
+
+    /**
+     * A single immutable captured execution. Parameter bindings are only retained
+     * when capture is enabled; callers decide whether to expose them.
+     */
+    public record CapturedStatement(
+        long id,
+        long timestamp,
+        String sql,
+        StatementType statementType,
+        Category category,
+        long durationMillis,
+        boolean success,
+        String errorMessage,
+        Long affectedRows,
+        int batchSize,
+        String connectionId,
+        String thread,
+        String traceId,
+        List<String> parameters) {
+
+        public CapturedStatement {
+            parameters = parameters == null ? List.of() : List.copyOf(parameters);
         }
     }
 
